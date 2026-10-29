@@ -6,6 +6,7 @@
     <meta name="description" content="Extract CVEs from any public advisory and enrich them with CISA SSVC, KEV, CVE.org, NVD, and CISA Vulnrichment data." />
     <meta name="theme-color" content="#08110e" />
     <title>Advisory Lens — CVE &amp; SSVC analysis</title>
+    <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -42,6 +43,11 @@
         <div class="form-meta">
           <span>Works with web pages, PDFs, and pasted CVE IDs</span>
           <button class="text-button" id="demoButton" type="button">Try an example</button>
+        </div>
+        <div class="scan-error hidden" id="scanError" role="alert">
+          <div class="scan-error-icon" aria-hidden="true">!</div>
+          <div><strong id="scanErrorTitle">The advisory could not be read</strong><p id="scanErrorText"></p></div>
+          <button id="dismissError" type="button" aria-label="Dismiss error">×</button>
         </div>
       </section>
 
@@ -126,7 +132,7 @@
       <section class="empty-state" id="emptyState">
         <div class="empty-graphic" aria-hidden="true"><span>CVE</span><i></i><i></i><i></i></div>
         <h2>Your analysis will appear here</h2>
-        <p>Results stay in this tab and disappear when you refresh. Blocked advisory links may be read through Jina Reader.</p>
+        <p>Results stay in this tab and disappear when you refresh. Public reader services are used when a source blocks browser access.</p>
       </section>
     </main>
 

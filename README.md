@@ -21,9 +21,9 @@ There is no build step and no server-side component.
 
 ## How data access works
 
-The app loads the KEV catalog once per page load and keeps it in memory until the tab is refreshed. It tries CISA's official feed first and CISA's official `kev-data` GitHub mirror second.
+The app loads the KEV catalog once per page load and keeps it in memory until the tab is refreshed. It uses CISA's official `kev-data` GitHub mirror so a CISA.gov CORS rejection does not generate an error. JSON is preferred and CSV is the fallback.
 
-Browsers cannot directly read many third-party sites because of CORS restrictions. Advisory Lens first tries the source URL directly, then uses the public [Jina Reader](https://github.com/jina-ai/reader) endpoint to convert the page or PDF to text. If both methods are blocked, paste the CVE identifiers directly into the same input.
+Browsers cannot directly read many third-party sites because of CORS restrictions. Advisory Lens no longer attempts a direct cross-origin request. It uses two CORS-safe HTML paths, a JavaScript-capable reader, and [Jina Reader](https://github.com/jina-ai/reader) as a final fallback. Android bulletins prefer the raw HTML paths. Microsoft monthly release-note links are translated to Microsoft's official, compact Security Update Guide release API before going through a CORS-safe path; this avoids both the empty page shell and the very large monthly CVRF download. If every reader is blocked by the local network or the source site, the app keeps a visible error below the input and accepts pasted CVE identifiers in the same field.
 
 NVD's unauthenticated API has a low public rate limit, so NVD calls are deliberately paced. A large advisory can take several minutes. CVE.org and Vulnrichment requests run in parallel while the NVD queue progresses.
 
@@ -39,4 +39,4 @@ Inferred values are labeled **Inferred · confirm** and should receive analyst r
 
 ## Privacy and limitations
 
-Results and API responses stay in the browser's memory and disappear on refresh. When the direct fetch fails, the source URL is sent to Jina Reader for text extraction. Public-source availability, CORS policies, upstream API changes, and rate limits can affect results. This tool is decision support, not a compliance determination or substitute for analyst judgment.
+Results and API responses stay in the browser's memory and disappear on refresh. Advisory URLs are sent to one of the public reading services described above for extraction; do not submit private or authenticated URLs. Public-source availability, CORS policies, upstream API changes, corporate web filters, and rate limits can affect results. This tool is decision support, not a compliance determination or substitute for analyst judgment.

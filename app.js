@@ -1,7 +1,9 @@
 const ENDPOINTS = {
   kev: [
-    "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
-    "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json",
+    { type: "json", url: "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json" },
+    { type: "json", url: "https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json" },
+    { type: "csv", url: "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.csv" },
+    { type: "csv", url: "https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.csv" },
   ],
   cve: (id) => `https://cveawg.mitre.org/api/cve/${id}`,
   nvd: (id) => `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${id}`,
@@ -60,6 +62,10 @@ const el = {
   dialogContent: $("#dialogContent"),
   dialogClose: $("#dialogClose"),
   toast: $("#toast"),
+  scanError: $("#scanError"),
+  scanErrorTitle: $("#scanErrorTitle"),
+  scanErrorText: $("#scanErrorText"),
+  dismissError: $("#dismissError"),
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -100,6 +106,7 @@ function bindEvents() {
     }
   });
   el.exportButton.addEventListener("click", exportCsv);
+  el.dismissError.addEventListener("click", () => el.scanError.classList.add("hidden"));
   el.dialogClose.addEventListener("click", () => el.dialog.close());
   el.dialog.addEventListener("click", (event) => {
     if (event.target === el.dialog) el.dialog.close();
@@ -108,12 +115,14 @@ function bindEvents() {
 
 async function loadKevCatalog() {
   let lastError;
-  for (const url of ENDPOINTS.kev) {
+  for (const source of ENDPOINTS.kev) {
     try {
-      const data = await fetchJson(url, { timeout: 25000 });
-      if (!Array.isArray(data.vulnerabilities)) throw new Error("Unexpected KEV format");
+      const response = await fetchWithTimeout(source.url, { headers: { Accept: source.type === "json" ? "application/json" : "text/csv,text/plain" } }, 30000);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = source.type === "json" ? await response.json() : kevFromCsv(await response.text());
+      if (!Array.isArray(data.vulnerabilities) || !data.vulnerabilities.length) throw new Error("Unexpected KEV format");
       state.kev = new Map(data.vulnerabilities.map((item) => [String(item.cveID || item.cveId).toUpperCase(), item]));
-      state.kevMeta = { version: data.catalogVersion, released: data.dateReleased, url };
+      state.kevMeta = { version: data.catalogVersion, released: data.dateReleased, url: source.url };
       el.catalogState.innerHTML = `<span class="state-dot"></span><span>CISA KEV ${escapeHtml(data.catalogVersion || "ready")} · ${state.kev.size.toLocaleString()} records</span>`;
       return;
     } catch (error) {
@@ -135,6 +144,7 @@ async function runAnalysis(input) {
   state.advisoryText = "";
   state.nvdLastRequest = 0;
   state.nvdChain = Promise.resolve();
+  el.scanError.classList.add("hidden");
   setBusy(true);
   showProgress("Reading advisory", "Looking for CVE identifiers…", 4, "advisory");
 
@@ -143,7 +153,7 @@ async function runAnalysis(input) {
     state.advisoryText = sourceText;
     const cves = extractCves(sourceText);
     if (!cves.length) throw new Error("No CVE identifiers were found. Try another public link or paste the CVE IDs directly.");
-    if (cves.length > 100) throw new Error(`This page contains ${cves.length} CVEs. The browser edition analyzes up to 100 at a time.`);
+    if (cves.length > 500) throw new Error(`This page contains ${cves.length} CVEs. Analyze them in groups of 500 so public data services do not reject the requests.`);
     await state.kevReady;
 
     markStep("advisory", "done");
@@ -168,7 +178,10 @@ async function runAnalysis(input) {
     renderResults();
     setTimeout(() => el.progressPanel.classList.add("hidden"), 450);
   } catch (error) {
-    if (error.name !== "AbortError" && !state.cancelled) showToast(error.message || "The analysis could not be completed.");
+    if (error.name !== "AbortError" && !state.cancelled) {
+      showScanError(error.message || "The analysis could not be completed.");
+      showToast("Analysis stopped. See the message below the input for details.");
+    }
     el.progressPanel.classList.add("hidden");
   } finally {
     setBusy(false);
@@ -184,25 +197,52 @@ function cancelAnalysis(showMessage = true) {
 }
 
 async function fetchAdvisory(url) {
-  const attempts = [url, `https://r.jina.ai/${url}`];
+  const target = new URL(url);
+  const corsDev = `https://proxy.cors.dev/${url}`;
+  const allOrigins = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  const renderedReader = `https://cors.tools/read?url=${encodeURIComponent(url)}&render=true&format=markdown`;
+  const jinaReader = `https://r.jina.ai/${url}`;
+  const isMicrosoft = /(^|\.)msrc\.microsoft\.com$/i.test(target.hostname);
+  const isAndroid = /(^|\.)source\.android\.com$/i.test(target.hostname);
+  const msrcRelease = isMicrosoft ? target.pathname.match(/\/releaseNote\/([^/]+)/i)?.[1] : "";
+  const msrcApi = msrcRelease ? `https://api.msrc.microsoft.com/sug/v2.0/en-US/releaseNote/${encodeURIComponent(msrcRelease)}` : "";
+  const attempts = msrcApi
+    ? [
+        { label: "Microsoft release API", url: `https://proxy.cors.dev/${msrcApi}` },
+        { label: "Microsoft release API mirror", url: `https://api.allorigins.win/raw?url=${encodeURIComponent(msrcApi)}` },
+        { label: "JavaScript reader", url: renderedReader },
+        { label: "text reader", url: jinaReader },
+      ]
+    : isMicrosoft
+      ? [{ label: "JavaScript reader", url: renderedReader }, { label: "text reader", url: jinaReader }, { label: "CORS proxy", url: corsDev }, { label: "HTML proxy", url: allOrigins }]
+    : isAndroid
+      ? [{ label: "CORS proxy", url: corsDev }, { label: "HTML proxy", url: allOrigins }, { label: "JavaScript reader", url: renderedReader }, { label: "text reader", url: jinaReader }]
+      : [{ label: "CORS proxy", url: corsDev }, { label: "HTML proxy", url: allOrigins }, { label: "JavaScript reader", url: renderedReader }, { label: "text reader", url: jinaReader }];
   let lastError;
-  for (let index = 0; index < attempts.length; index += 1) {
+  let bestText = "";
+  const failures = [];
+  for (const attempt of attempts) {
     try {
-      const response = await fetchWithTimeout(attempts[index], { headers: { Accept: "text/html,text/plain,application/json,application/pdf;q=0.8,*/*;q=0.5" } }, 35000);
+      const response = await fetchWithTimeout(attempt.url, { headers: { Accept: "text/html,text/plain,application/json,application/pdf;q=0.8,*/*;q=0.5" } }, 45000);
       if (!response.ok) throw new Error(`Advisory returned HTTP ${response.status}`);
       const type = response.headers.get("content-type") || "";
-      const text = await response.text();
+      let text = await response.text();
       if (!text || text.length < 10) throw new Error("The advisory was empty");
-      if (index === 0 && type.includes("text/html")) {
+      if (/Internet Security by Zscaler|Access Denied|error code:\s*(5\d\d|403)|Request Timeout/i.test(text.slice(0, 20000))) throw new Error("The reader was blocked upstream");
+      if (type.includes("text/html") || /^\s*<!doctype html/i.test(text)) {
         const doc = new DOMParser().parseFromString(text, "text/html");
-        return `${doc.title}\n${doc.body?.innerText || text}`;
+        text = `${doc.title}\n${doc.body?.innerText || text}`;
       }
-      return text;
+      if (text.length > bestText.length) bestText = text;
+      if (extractCves(text).length) return text;
+      failures.push(`${attempt.label}: page contained no CVE IDs`);
     } catch (error) {
       lastError = error;
+      failures.push(`${attempt.label}: ${error.message}`);
     }
   }
-  throw new Error(`The advisory could not be read from this browser. Paste its CVE IDs directly instead. ${lastError?.message || ""}`);
+  if (bestText) return bestText;
+  throw new Error(`This site blocked all browser-safe readers. Paste its CVE IDs into the same field instead. Tried ${failures.join("; ") || lastError?.message || "available readers"}.`);
 }
 
 async function enrichCve(id, advisoryText) {
@@ -288,6 +328,39 @@ async function fetchJson(url, { timeout = 30000 } = {}) {
   const response = await fetchWithTimeout(url, { headers: { Accept: "application/json" } }, timeout);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
+}
+
+function kevFromCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') quoted = false;
+      else field += character;
+    } else if (character === '"') quoted = true;
+    else if (character === ",") {
+      row.push(field);
+      field = "";
+    } else if (character === "\n") {
+      row.push(field.replace(/\r$/, ""));
+      rows.push(row);
+      row = [];
+      field = "";
+    } else field += character;
+  }
+  if (field || row.length) {
+    row.push(field.replace(/\r$/, ""));
+    rows.push(row);
+  }
+  const headers = (rows.shift() || []).map((header) => header.trim());
+  const vulnerabilities = rows.filter((values) => values.some(Boolean)).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index] || ""])));
+  return { catalogVersion: "GitHub mirror", vulnerabilities };
 }
 
 async function fetchWithTimeout(url, options = {}, timeout = 30000) {
@@ -587,6 +660,12 @@ function showToast(message) {
   el.toast.classList.add("show");
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => el.toast.classList.remove("show"), 5200);
+}
+
+function showScanError(message) {
+  el.scanErrorTitle.textContent = "The advisory could not be analyzed";
+  el.scanErrorText.textContent = message;
+  el.scanError.classList.remove("hidden");
 }
 
 function badge(value, extra = "") {
